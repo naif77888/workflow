@@ -104,7 +104,10 @@ describe.skipIf(process.platform === 'win32')(
      * and then blocks A's event loop for {@link SYNC_STRETCH_MS} before
      * answering 200; later deliveries to A are answered at once.
      */
-    async function runScenario(staleSecondsA: number) {
+    async function runScenario(
+      staleSecondsA: number,
+      syncStretchMs = SYNC_STRETCH_MS
+    ) {
       const deliveredToA = Promise.withResolvers<void>();
       onDeliveryA = (response) => {
         if (deliveriesA.length > 1) {
@@ -117,7 +120,7 @@ describe.skipIf(process.platform === 'win32')(
         void waitForHostB(/^ready$/).then(() => {
           // A synchronous stretch in A (e.g. an inline step): A's renewal
           // timer cannot fire, but B, another process, keeps sweeping.
-          const until = Date.now() + SYNC_STRETCH_MS;
+          const until = Date.now() + syncStretchMs;
           while (Date.now() < until) {}
           response.end('{}');
         });
@@ -233,6 +236,26 @@ describe.skipIf(process.platform === 'win32')(
       ]);
       expect(deliveriesA).toEqual(['1']);
     }, 90_000);
+
+    // The documented switch from the default to `30` ("on every process"),
+    // midway: one process still on the unset default (300s, confirm window
+    // 150s), one already on 30. A's stretch must outlast B's release (30s
+    // plus up to one sweep interval), and A's overdue renewal timer then
+    // races A's acknowledgement, so this case can go either way.
+    test('production values midway through switching from the default to 30', async () => {
+      const warn = vi.spyOn(console, 'warn');
+      await startHostB(30);
+      await runScenario(300, 50_000);
+
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      const rows = await jobRows();
+      const warned = lostLockWarned(warn);
+      console.log(
+        `[poc] production values: rows=${JSON.stringify(rows)} lostLockWarned=${warned}`
+      );
+      expect(rows).toEqual([]);
+      expect(warned).toBe(false);
+    }, 180_000);
 
     test('control: with equal windows the fence holds and the failure is retried', async () => {
       const warn = vi.spyOn(console, 'warn');
